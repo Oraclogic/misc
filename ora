@@ -1,0 +1,1108 @@
+#!/bin/sh
+
+if [ "$LOGNAME" = "quest" ]; then
+SQLPLUS_CMD="query/aq1zhqdc";
+else
+SQLPLUS_CMD="/ as sysdba";
+fi
+
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 200
+col host_name for a20
+col instance for a10
+select host_name,instance_name from v\$instance;
+exit;
+EOF
+case $1 in 
+si)
+if [ "$LOGNAME" = "quest" ]; then
+sqlplus "query/aq1zhqdc"
+else
+sqlplus "/"
+fi
+;;
+active)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 256
+col ONLINE_TIME for a15
+col sid format 9999
+col program format a22
+col sql_id for a13
+col username format a18
+col module for a20
+set pagesize 1000
+col event for a29
+col MACHINE for a20
+select "SID",serial#,
+seq#,
+sql_id,SQL_CHILD_NUMBER cn,
+USERNAME,event,
+replace(replace(S.MACHINE,'ZJHZ-PS-CMREAD-SV-',''),'-SD','') machine,
+"MODULE",program,
+substr(numtodsinterval(sysdate - s.LOGON_TIME,'day'),9,11) ONLINE_TIME
+from v\$session s
+where status = 'ACTIVE'
+and username<>'SYS' order  by event;
+exit;
+EOF
+;;
+activesys)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 256
+col ONLINE_TIME for a12
+col WAITED_TIME for a12
+col sid format 9999
+col program format a27
+col sql_id for a13
+col username format a8
+col module for a27
+set pagesize 1000
+col event for a33
+col MACHINE for a10
+select "SID",serial#,
+seq#,
+sql_id,SQL_CHILD_NUMBER cn,
+USERNAME,event,
+replace(replace(S.MACHINE,'ZJHZ-PS-CMREAD-SV-',''),'-SD','') machine,
+"MODULE",program,
+substr(numtodsinterval(SECONDS_IN_WAIT/3600/24,'day'),9,11) waited_time,
+substr(numtodsinterval(sysdate - s.LOGON_TIME,'day'),9,11) ONLINE_TIME
+from v\$session s
+where status = 'ACTIVE'
+and username='SYS' order  by event;
+exit;
+EOF
+;;
+active_withspid)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 256
+col INST_ID for 9
+col sid format 9999
+col s# format 99999
+col sql_id for a13
+col spid for  a10
+col username format a12
+col event format a28
+col machine format a14
+col module for a20
+set pagesize 1000
+col p123 format a27
+col wt format 999
+col INST_ID  for 9
+SELECT /* ALIPAY leading(s) first_rows */
+S.INST_ID,
+S.SID,
+S.SERIAL# S#,
+s.seq#,
+P.SPID,
+NVL(S.USERNAME, SUBSTR(P.PROGRAM, LENGTH(P.PROGRAM) - 6)) USERNAME,
+replace(replace(S.MACHINE,'ZJHZ-PS-CMREAD-SV-',''),'-SD','') machine,
+module,
+s.event,
+s.p1 || '/' || s.p2 || '/' || s.p3 P123,
+s.wait_time wt,
+nvl(SQL_id, PREV_sql_id) SQL_id
+FROM GV\$PROCESS P, GV\$SESSION S
+WHERE P.ADDR = S.PADDR
+AND S.STATUS = 'ACTIVE'
+AND S.WAIT_CLASS <>'Idle'
+AND S.USERNAME!='SYS'
+AND ('$2' IS NULL OR S.INST_ID = '$2')
+AND p.INST_ID=S.INST_ID
+AND ('$2' IS NULL OR p.INST_ID = '$2')
+AND P.BACKGROUND is NULL
+order by inst_id, s.event;
+exit;
+EOF
+;;
+invalid_object)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set pagesize 200
+set linesize 200
+col owner for a20
+break on instance_name
+col object_name for a30
+with t as (
+SELECT object_type,owner,
+       object_name
+  FROM dba_objects
+ WHERE status = 'INVALID'
+   and object_type = 'PACKAGE BODY'
+union
+  SELECT object_type,owner,
+         object_name
+    FROM dba_objects
+   WHERE status = 'INVALID'
+     and object_type in ('JAVA CLASS','PROCEDURE','FUNCTION','VIEW','TRIGGER'))
+select instance_name,t.* from t,v\$instance;
+exit;
+EOF
+;;
+log_file_sync)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set pagesize 200
+set linesize 200   
+alter session set nls_date_format='yyyy/mm/dd hh24:mi:ss';
+alter session set nls_language='american';
+select trunc(sample_time,'mi'),event,count(1)
+  from v$active_session_history
+ where sample_time >= trunc(sysdate) -1--+ 9 / 24 + 00 / 24 / 60
+   and sample_time <= trunc(sysdate) +1--+ 10 / 24 + 00 / 24 / 60
+   and event='log file sync'
+   group by trunc(sample_time,'mi'),event
+   order by trunc(sample_time,'mi'),event;
+exit;
+EOF
+;;
+username)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 150
+set pagesize 1000
+alter session set cursor_sharing=force;
+select 'create user '||username||' identified by psw'||
+' default tablespace ' ||default_tablespace||
+' temporary tablespace ' || temporary_tablespace || ' profile ' ||
+profile || ';'  sql_statement
+from dba_users where username=upper('$2')
+union all
+select 'grant '||privilege||' to '||grantee||decode(admin_option, 'yes', ' with admin option')||';'
+from dba_sys_privs
+where grantee =upper('$2')     
+union all 
+select 'grant ' || granted_role || ' to ' || grantee ||
+decode(admin_option, 'yes', ' with admin option') || ';'
+from dba_role_privs
+where grantee =upper('$2');
+exit
+EOF
+;;     
+size)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 180
+col owner format a10
+col SEGMENT_NAME for a42
+col SEGMENT_TYPE for a22
+col PARTITION_NAME for a20
+set pagesize 20
+alter session set cursor_sharing=force;
+SELECT  OWNER||'.'||SEGMENT_NAME SEGMENT_NAME,NVL(PARTITION_NAME,'TABLE_SIZE') PARTITION_NAME,SEGMENT_TYPE, SUM(BYTES)/1048576 SIZE_MB
+FROM DBA_SEGMENTS
+WHERE SEGMENT_NAME = upper('$2')
+AND ('$3' IS NULL OR UPPER(OWNER) = UPPER('$3'))
+AND SEGMENT_TYPE LIKE 'TABLE%'
+GROUP BY OWNER||'.'||SEGMENT_NAME ,SEGMENT_TYPE , partition_name
+UNION ALL
+SELECT OWNER||'.'||SEGMENT_NAME,NVL(PARTITION_NAME,'INDEX_SIZE') PARTITION_NAME,SEGMENT_TYPE, SUM(BYTES)/1048576 SIZE_MB
+FROM DBA_SEGMENTS
+WHERE (OWNER,SEGMENT_NAME) IN (
+SELECT OWNER,INDEX_NAME FROM DBA_INDEXES WHERE TABLE_NAME=upper('$2') AND
+('$3' IS NULL OR UPPER(OWNER) = UPPER('$3'))
+UNION
+SELECT OWNER,SEGMENT_NAME FROM DBA_LOBS WHERE TABLE_NAME=upper('$2') AND
+('$3' IS NULL OR UPPER(OWNER) = UPPER('$3')))
+GROUP BY owner||'.'||SEGMENT_NAME, SEGMENT_TYPE,partition_name;
+exit;
+EOF
+;;
+spid_db_status)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+col MODULE for a30  
+set linesize 200
+col ospid for a10
+col machine for a25
+col program for a25
+col event for a28
+col session_id for a15
+select sid||','||serial# session_id,
+       status,
+       sql_id,EVENT,
+       machine,
+       program,
+       module,
+       to_char(logon_time, 'yyyymmdd hh24:mi:ss') logon_time,
+       (select spid from v\$process where addr = s.paddr) ospid
+  from v\$session s
+ where paddr in (select addr from v\$process where spid = $2);
+exit;
+EOF
+;;
+tab_stats)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 200
+set pagesize 100
+col column_name for a20
+col index_name for a40
+col table_name for a40
+col data_type for a15
+col LAST_ANALYZED for a20
+select owner||'.'||table_name table_name, column_name, data_type, num_distinct, num_nulls,to_char(LAST_ANALYZED,'yyyy/mm/dd hh24:mi') LAST_ANALYZED
+  from dba_tab_columns
+ where table_name = upper('$2')
+ order by num_distinct desc;
+select index_owner || '.' || index_name index_name,
+       ic.column_position,
+       tc.COLUMN_NAME,
+       NUM_DISTINCT,
+       NUM_NULLS,
+       NUM_ROWS
+  from dba_ind_columns ic, dba_tab_columns tc, dba_tables dt
+ where ic.table_name = upper('$2')
+   and tc.table_name = ic.table_name
+   and ic.COLUMN_NAME=tc.COLUMN_NAME
+   and ic.table_name = dt.table_name
+   order by index_name,column_position;
+exit;
+EOF
+;;
+lock_check)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 200
+set pagesize 200
+col "KILL BLOCKING SESSOIN" for a40
+col last_active_duration for a20
+col blockingmachine for a30
+col blockedevent for a40
+col blockingmdl for a20
+col blockedse for a20
+col run for a35
+select --a.INST_ID,
+ a.sid,
+ substr(numtodsinterval(sysdate - sa.prev_exec_start, 'day'), 9, 11) ||chr(10)||
+ sa.username last_active_duration,
+ 'alter system kill session ''' || sa.SID || ',' || sa.serial# || ''';' "KILL BLOCKING SESSOIN",
+ sa.module||chr(10)|| sa.machine blockingmachine,
+ b.sid,
+ sb.module ||chr(10)|| sb.USERNAME blockedse,
+ sb.sql_id blockedsqlid,
+ sb.event  ||chr(10)|| 'alter system kill session ''' || sb.SID || ',' || sb.serial# || ''';' blockedevent
+  from gv\$lock a, gv\$lock b, gv\$session sa, gv\$session sb
+ where a.BLOCk = 1
+   and b.REQUEST > 0
+   and sa.inst_id = a.inst_id
+   and sa.sid = a.sid
+   and sb.inst_id = b.inst_id
+   and sb.sid = b.sid
+   and a.id1 = b.id1
+   and a.id2 = b.id2
+ order by 1;
+exit;
+EOF
+;;
+lock_bpo)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 200
+set pagesize 200
+col username for a20
+col logon_time for a20
+col start_time for a20
+col killstatement for a50
+with t as
+ (select sid, serial#, s.USERNAME, S.LOGON_TIME,t.START_TIME
+    from v\$transaction t, v\$session s
+   where s.TADDR = t.addr)
+select T.*,
+       (select user_name from tuser_Profiles where user_id = t.username) un,
+       'ALTER SYSTEM KILL SESSION ''' || SID || ',' || SERIAL# || ''';' KILLSTATEMENT
+  FROM T
+ WHERE T.USERNAME IN
+       (select USER_ID from tuser_profiles where DEPT_ID = 'OSP')
+ order by username;
+exit;
+EOF
+;;
+kgllock)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 200
+col blocking_sid for a15
+col blocking_machine for a40
+col event for a30
+col waiting_sid for a15
+col waiting_machine for a40
+col wait_time for a12
+with waiting as
+ (select s1.sid || ',' || s1.SERIAL# waiting_sid,
+         s1.machine waiting_machine,
+         s1.event,
+         substr(numtodsinterval(s1.SECONDS_IN_WAIT, 'second'), 9, 11) WAIT_TIME,         
+         l1.*
+    from dba_kgllock l1, v\$session s1
+   where kgllkreq > 0
+     and l1.kgllkuse = s1.SADDR),
+blocking as
+ (select s2.sid || ',' || s2.SERIAL# blocking_sid,
+         s2.machine blocking_machine,
+         s2.event,
+         l2.*
+    from dba_kgllock l2, v\$session s2
+   where kgllkmod > 0
+     and kgllktype = 'Pin'
+     and l2.kgllkuse = s2.SADDR)
+select b.blocking_sid,
+       b.blocking_machine,
+       b.event,
+       w.waiting_sid,
+       w.waiting_machine,
+       w.event,
+       w.WAIT_TIME
+  from waiting w, blocking b
+ where w.kgllkhdl = b.kgllkhdl;
+exit;
+EOF
+;;
+kgllock_obj)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 200
+set pagesize 1000
+col sid for a20
+col machine for a30
+col module for a20
+col kglnaown for a30
+col KGLNAOBJ for a80
+select distinct sid || ',' || serial# sid, s.machine, s.MODULE,s.status, ko.kglnaown,ko.kglnaobj
+  from dba_kgllock kl, v\$session s, sys.x\$kglob ko
+ where s.SADDR = kl.kgllkuse
+   and kl.kgllkhdl = ko.KGLHDADR
+   and ko.kglnaobj='$2'
+   and s.status='ACTIVE'
+   order by status,sid;
+exit;
+EOF
+;;
+kgllock_sid)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 200
+set pagesize 1000
+col sid for a20
+col machine for a30
+col module for a20
+col kglnaown for a30
+col KGLNAOBJ for a80
+select distinct sid || ',' || serial# sid,
+                s.machine,
+                s.MODULE,
+                s.status,
+                ko.kglnaown,
+                ko.kglnaobj
+  from dba_kgllock kl, v\$session s, sys.x\$kglob ko
+ where s.SADDR = kl.kgllkuse
+   and s.SID = $2
+   and kl.kgllkhdl = ko.KGLHDADR
+   and ko.kglnaown is not null
+   and ko.kglnaown <> 'SYS'
+ order by status, sid, KGLNAOWN, KGLNAOBJ;
+exit;
+EOF
+;;
+sql_check)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 200
+set pagesize 1000
+set long 6000
+col module for a30
+col operation for a60
+col object for a40
+col PARTITION_START for a15
+col PARTITION_STOP for a15
+col PARTITION_START noprint
+col PARTITION_STOP noprint
+col PARTITION_ID noprint
+col KBYTES noprint
+col id noprint
+select sql_fulltext from v\$sql where sql_id='$2';
+col module for a30
+select sql_id,CHILD_NUMBER,a.PLAN_HASH_VALUE,a.SQL_PLAN_BASELINE,
+       buffer_gets / executions "平均逻辑读",
+       a.ELAPSED_TIME / executions / 1000000 "平均执行时间(s)",
+       --buffer_gets,
+       executions "执行次数",
+       disk_reads/executions,
+       rows_processed/executions
+  from V\$sQL a
+ where EXECUTIONS > 0
+   and PARSING_SCHEMA_NAME not in ('SYS', 'SYSMAN', 'OWBSYS', 'EXFSYS')
+   and sql_id=trim('$2');
+
+select sql_id,PLAN_HASH_VALUE,id,
+       lpad(' ', 2 * depth) || operation || ' ' || options ||
+       decode(id, 0, substr(optimizer, 1, 6) || ' Cost=' || to_char(cost)) operation,
+       DECODE(T.OBJECT_OWNER,
+              NULL,
+              '',
+              T.OBJECT_OWNER || '.' || object_name) object,
+       cost,
+       cardinality,
+       round(bytes / 1024) kbytes,
+       partition_start,
+       partition_stop,
+       partition_id,
+       cpu_cost,
+       TEMP_SPACE
+  from v\$sql_plan t
+ where sql_id = trim('$2');
+select sql_id,PLAN_HASH_VALUE,id,
+       lpad(' ', 2 * depth) || operation || ' ' || options ||
+       decode(id, 0, substr(optimizer, 1, 6) || ' Cost=' || to_char(cost)) operation,
+       DECODE(T.OBJECT_OWNER,
+              NULL,
+              '',
+              T.OBJECT_OWNER || '.' || object_name) object,
+       cost,
+       cardinality,
+       round(bytes / 1024) kbytes,
+       partition_start,
+       partition_stop,
+       partition_id,
+       cpu_cost,
+       TEMP_SPACE
+  from dba_hist_sql_plan t
+ where sql_id = trim('$2')
+ order by PLAN_HASH_VALUE,id;
+exit;
+EOF
+;;
+longops)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 180
+col MESSAGE format a65
+col sid for  99999
+col opname for a12
+col serial# 999999
+alter session set cursor_sharing=force;
+select instance_name from v\$instance;
+select sid,serial#, opname,TIME_REMAINING REMAIN,
+ELAPSED_SECONDS ELAPSE,MESSAGE,
+SQL_ID
+from v\$session_longops where TIME_REMAINING >0;
+exit
+EOF
+;;
+tran)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 120
+col USERNAME format a12
+col rbs format a12
+col BLKS_RECS format a16
+col START_TIME format a17
+col LOGIO format 99999
+col PHY_IO FORMAT 99999
+COL CRGET FORMAT 99999999
+COL CRMOD FORMAT 99999
+alter session set cursor_sharing=force;
+select instance_name from v\$instance;
+SELECT /* AnySQL */ /* RULE */   
+S.SID,S.SERIAL#,S.USERNAME, R.NAME RBS, 
+T.START_TIME,  
+to_char(T.USED_UBLK)||','||to_char(T.USED_UREC) BLKS_RECS ,
+T.LOG_IO LOGIO,T.PHY_IO PHYIO,T.CR_GET CRGET,T.CR_CHANGE CRMOD 
+FROM V\$TRANSACTION T, V\$SESSION S,V\$ROLLNAME R, 
+V\$ROLLSTAT RS
+WHERE T.SES_ADDR(+) = S.SADDR   
+AND T.XIDUSN = R.USN AND S.USERNAME IS NOT NULL  
+AND R.USN = RS.USN ;
+exit
+EOF
+;;
+depend)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 120
+alter session set cursor_sharing=force;
+SELECT /* AnySQL */ TYPE,REFERENCED_OWNER D_OWNER, 
+REFERENCED_NAME D_NAME,REFERENCED_TYPE D_TYPE, 
+REFERENCED_LINK_NAME DBLINK, DEPENDENCY_TYPE DEPEND
+FROM DBA_DEPENDENCIES 
+WHERE 
+UPPER(OWNER) = NVL(UPPER('$3'),OWNER) 
+AND NAME  = UPPER('$2');
+SELECT /* AnySQL */  REFERENCED_TYPE TYPE,OWNER R_OWNER,
+NAME R_NAME, TYPE R_TYPE,DEPENDENCY_TYPE DEPEND 
+FROM DBA_DEPENDENCIES 
+WHERE 
+UPPER(REFERENCED_OWNER) = NVL(UPPER('$3'),REFERENCED_OWNER) 
+AND REFERENCED_NAME  = UPPER('$2')
+AND REFERENCED_LINK_NAME IS NULL;
+exit
+EOF
+;;
+event)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 120
+alter session set cursor_sharing=force;
+SELECT /* AnySQL */ NAME FROM V\$EVENT_NAME WHERE EVENT#=TO_NUMBER('$2');
+exit
+EOF
+;;
+latch)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 120
+alter session set cursor_sharing=force;
+SELECT /* AnySQL */ NAME FROM V\$LATCHNAME WHERE LATCH#=TO_NUMBER('$2');
+exit
+EOF
+;;
+hold)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 120
+col USERNAME format a16
+col MACHINE format a20
+alter session set cursor_sharing=force;
+select instance_name from v\$instance;
+SELECT /* AnySQL */ /*+ RULE */ 
+S.SID,S.SERIAL#,P.SPID,S.USERNAME, 
+S.MACHINE,S.STATUS
+FROM V\$PROCESS P, V\$SESSION S, V\$LOCKED_OBJECT O   
+WHERE P.ADDR = S.PADDR  AND O.SESSION_ID=S.SID    
+AND S.USERNAME IS NOT NULL 
+AND O.OBJECT_ID=TO_NUMBER('$2');
+exit
+EOF
+;;
+sort)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 120
+col USERNAME format a12
+col MACHINE format a16
+col TABLESPACE format a10
+alter session set cursor_sharing=force;
+select instance_name from v\$instance;
+SELECT /* AnySQL */ /*+ ordered */  
+B.SID,B.SERIAL#,B.USERNAME,B.MACHINE,A.BLOCKS,A.TABLESPACE,
+A.SEGTYPE,A.SEGFILE# FILE#,A.SEGBLK# BLOCK#
+FROM V\$SORT_USAGE A,V\$SESSION B
+WHERE A.SESSION_ADDR = B.SADDR; 
+exit
+EOF
+;;
+desc)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 120
+col name format a30
+col nullable format a8
+col type format a30
+alter session set cursor_sharing=force;
+select /* AnySQL D5 */ 
+COLUMN_ID NO#,COLUMN_NAME NAME, 
+DECODE(NULLABLE,'N','NOT NULL','') NULLABLE, 
+(case  
+when data_type='CHAR' then data_type||'('||data_length||')' 
+when data_type='VARCHAR' then data_type||'('||data_length||')' 
+when data_type='VARCHAR2' then data_type||'('||data_length||')' 
+when data_type='NCHAR' then data_type||'('||data_length||')' 
+when data_type='NVARCHAR' then data_type||'('||data_length||')' 
+when data_type='NVARCHAR2' then data_type||'('||data_length||')' 
+when data_type='RAW' then data_type||'('||data_length||')' 
+when data_type='NUMBER' then 
+( 
+case 
+when data_scale is null and data_precision is null then 'NUMBER' 
+when data_scale <> 0  then 'NUMBER('||NVL(DATA_PRECISION,38)||','||DATA_SCALE||')' 
+else 'NUMBER('||NVL(DATA_PRECISION,38)||')' 
+end 
+) 
+else
+( case 
+when data_type_owner is not null then data_type_owner||'.'||data_type 
+else data_type 
+end ) 
+end) TYPE 
+from all_tab_columns 
+where upper(owner)=UPPER(nvl('$3',owner)) AND TABLE_NAME=upper('$2') 
+order by 1;
+exit
+EOF
+;;
+segment)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 120
+col USERNAME format a12
+col MACHINE format a16
+col TABLESPACE format a10
+col SEGMENT_NAME format a32
+col PARTITION_NAME format a20
+alter session set cursor_sharing=force;
+SELECT /* AnySQL */ /*+ RULE */ 
+SEGMENT_TYPE,OWNER SEGMENT_OWNER,SEGMENT_NAME,PARTITION_NAME,  
+TRUNC(SUM(BYTES)/1024/1024,1) SIZE_MB 
+FROM DBA_SEGMENTS WHERE OWNER NOT IN ('SYS','SYSTEM') 
+GROUP BY SEGMENT_TYPE,OWNER,SEGMENT_NAME,PARTITION_NAME
+HAVING SUM(BYTES) > TO_NUMBER(NVL('$2','100')) * 1048576  
+ORDER BY 5,4,1,2,3 DESC;
+exit
+EOF
+;;
+seqlike)
+objname=`echo $2|tr 'a-z' 'A-Z'`
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 120
+col owner format a12
+col MAX_VALUE format 999999999999
+alter session set cursor_sharing=force;
+SELECT /* AnySQL */ SEQUENCE_OWNER OWNER,SEQUENCE_NAME, 
+MIN_VALUE LOW,MAX_VALUE HIGH,INCREMENT_BY STEP,CYCLE_FLAG CYC,
+ORDER_FLAG ORD,CACHE_SIZE CACHE,LAST_NUMBER CURVAL
+FROM DBA_SEQUENCES 
+WHERE ('$3' IS NULL OR UPPER(SEQUENCE_OWNER) = UPPER('$3')) 
+AND SEQUENCE_NAME LIKE '%${objname}%' ;
+exit
+EOF
+;;
+tabpart)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 120
+col USERNAME format a12
+col MACHINE format a16
+col TABLESPACE format a10
+alter session set cursor_sharing=force;
+SELECT /* AnySQL */ PARTITION_POSITION NO#,PARTITION_NAME,TABLESPACE_NAME TS_NAME, 
+INITIAL_EXTENT/1024 INI_K, NEXT_EXTENT/1024 NEXT_K,PCT_INCREASE PCT, 
+FREELISTS FLS, FREELIST_GROUPS FLGS 
+FROM DBA_TAB_PARTITIONS 
+WHERE ('$3' IS NULL OR UPPER(TABLE_OWNER) = UPPER('$3')) 
+AND TABLE_NAME LIKE UPPER('$2') 
+ORDER BY 1; 
+exit
+EOF
+;;
+param)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 120
+col NAME format a40
+COL VALUE FORMAT A40
+alter session set cursor_sharing=force;
+select instance_name from v\$instance;
+SELECT /* AnySQL */ NAME,ISDEFAULT,ISSES_MODIFIABLE SESMOD, 
+ISSYS_MODIFIABLE SYSMOD,VALUE 
+FROM V\$PARAMETER 
+WHERE NAto_number(nvl('$4','0')) AND 
+TO_NUMBER(TO_CHAR(A.SNAP_TIME,'HH24')) >= to_number(nvl('$5','0')) AND 
+TO_NUMBER(TO_CHAR(A.SNAP_TIME,'HH24')) <= to_number(nvl('$6','23')) AND 
+B.SNAP_ID = (SELECT MAX(SNAP_ID) FROM stats\$snapshot WHERE SNAP_ID < A.SNAP_ID) AND 
+B.DBID = A.DBID AND B.INSTANCE_NUMBER = A.INSTANCE_NUMBER AND 
+B.STARTUP_TIME = A.STARTUP_TIME 
+) SNAP 
+where sqla.snap_id = snap.snap_id_a 
+and sqla.dbid    = snap.db_id_a 
+and sqla.instance_number = snap.inst_a 
+and sqla.STATISTIC# = to_number('$2')
+and sqlb.snap_id = snap.snap_id_b 
+and sqlb.dbid    = snap.db_id_b 
+and sqlb.instance_number = snap.inst_b 
+and sqla.STATISTIC# = sqlb.STATISTIC#
+order by 1;
+exit           
+EOF
+;;
+plan)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 200      
+set pagesize 1000
+alter session set cursor_sharing=force;
+select plan_table_output from table(dbms_xplan.DISPLAY_CURSOR('$2',null));
+exit
+EOF
+;;   
+eplan)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 120
+set pagesize 1000
+alter session set cursor_sharing=force;      
+col PLANLINE for a110
+col ps for a3
+col pe for a3
+SELECT * FROM 
+(SELECT     '   '||TO_CHAR(ID)||'   '||PARENT_ID||'   '
+||LPAD(' ', 2 * (DEPTH)) || A.OPERATION || ' ' || A.OPTIONS || '  ' 
+||A.OBJECT_OWNER || DECODE(A.OBJECT_NAME,NULL,NULL,'.'||a.OBJECT_NAME)  || '' || A.OBJECT_TYPE 
+||DECODE(A.COST, NULL, NULL,' (cost=' ||A.COST 
+||DECODE(A.CARDINALITY, NULL, NULL, ',card=' ||A.CARDINALITY) 
+||DECODE(A.BYTES, NULL, NULL, ',bytes=' ||A.BYTES) || ')')
+||DECODE(ID,0,' childnum:'||A.CHILD_NUMBER||' time:'
+||TO_CHAR(A.TIMESTAMP,'(dd/mm/yyyy hh24:mi:ss)') ||'  opt_mode:',NULL)
+||DECODE(OPTIMIZER,NULL,'','analyzed','', OPTIMIZER)  PLANLINE,
+PARTITION_START PS,
+PARTITION_STOP PE
+FROM (SELECT * FROM V\$SQL_PLAN WHERE SQL_ID='$2') A
+ORDER BY CHILD_NUMBER,ID, DEPTH)
+UNION  ALL
+SELECT * FROM 
+(SELECT LPAD(TO_CHAR(ID), 3, ' ') || '   ' || OTHER_TAG SQLPLAN,
+NULL P1,
+NULL P2
+FROM V\$SQL_PLAN
+WHERE OTHER_TAG IS NOT NULL
+AND SQL_ID='$2'
+ORDER BY CHILD_NUMBER, ID);
+EOF
+;;
+awrplan)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 120
+set pagesize 1000
+alter session set cursor_sharing=force;
+col PLANLINE for a110
+col ps for a3
+col pe for a3
+SELECT * FROM 
+(SELECT     '   '||TO_CHAR(ID)||'   '||PARENT_ID||'   '
+||LPAD(' ', 2 * (DEPTH)) || A.OPERATION || ' ' || A.OPTIONS || '  ' 
+||A.OBJECT_OWNER || DECODE(A.OBJECT_NAME,NULL,NULL,'.'||a.OBJECT_NAME)  || '' || A.OBJECT_TYPE 
+||DECODE(A.COST, NULL, NULL,' (cost=' ||A.COST 
+||DECODE(A.CARDINALITY, NULL, NULL, ',card=' ||A.CARDINALITY) 
+||DECODE(A.BYTES, NULL, NULL, ',bytes=' ||A.BYTES) || ')')
+||DECODE(ID,0,' SNAP_ID:'||A.SNAP_ID||' time:'
+||TO_CHAR(A.TIMESTAMP,'(dd/mm/yyyy hh24:mi:ss)') ||'  opt_mode:',NULL)
+||DECODE(OPTIMIZER,NULL,'','analyzed','', OPTIMIZER)  PLANLINE,
+PARTITION_START PS,
+PARTITION_STOP PE
+FROM (SELECT * FROM SYS.WRH\$_SQL_PLAN WHERE SQL_ID='$2') A
+ORDER BY SNAP_ID,ID, DEPTH)
+UNION  ALL
+SELECT * FROM 
+(SELECT LPAD(TO_CHAR(ID), 3, ' ') || '   ' || OTHER_TAG SQLPLAN,NULL P1,NULL P2
+FROM SYS.WRH\$_SQL_PLAN
+WHERE OTHER_TAG IS NOT NULL
+AND SQL_ID='$2'
+ORDER BY SNAP_ID, ID);
+EOF
+;;
+spid)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 200
+set pagesize 1000
+col addr new_value paddr 
+col sql_id new_value sql_id for a18
+col prev_sql_id new_value perv_sql_id for a18
+col machine for a20
+col program for a15
+col prev_sql_id for a18
+col pdml_status for a8
+col event for a20
+set verify off
+alter session set cursor_sharing=force;
+select instance_name from v\$instance;
+select spid,terminal,pga_used_mem,pga_alloc_mem,pga_max_mem,addr from v\$process where spid='$2';
+select sid,serial#,sql_id,machine,program,prev_sql_id,pdml_status,event from v\$session where paddr='&paddr';
+select * from table(dbms_xplan.display_cursor('&sql_id',null)); 
+select * from table(dbms_xplan.display_cursor('&perv_sql_id',null)); 
+exit
+EOF
+;;         
+sid)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 200
+set pagesize 1000
+col paddr new_value addr                 
+col sql_id new_value sql_id for a18
+col prev_sql_id new_value perv_sql_id for a18
+col machine for a20
+col program for a15
+col prev_sql_id for a18 
+col pdml_status for a8
+col event for a20
+col sid for 99999
+col addr for a10
+col PREV_SQL_ID for a13
+col SQL_ID for a13
+set verify off 
+alter session set cursor_sharing=force;
+select instance_name from v\$instance;
+select sid,serial#,sql_id,machine,program,prev_sql_id,pdml_status,event,paddr from v\$session where sid='$2';
+select spid,terminal,pga_used_mem,pga_alloc_mem,pga_max_mem from v\$process where addr='&addr';
+select * from table(dbms_xplan.display_cursor('&sql_id',null)); 
+select * from table(dbms_xplan.display_cursor('&perv_sql_id',null)); 
+exit
+EOF
+;;  
+ddl)
+sqlplus -s "$SQLPLUS_CMD" << EOF               
+alter session set cursor_sharing=force;
+set long 99999
+set linesize 256
+set pagesize 9999
+SELECT  DBMS_METADATA.GET_DDL(UPPER('$2'),UPPER('$3'),UPPER('$4')) FROM DUAL;
+exit           
+EOF
+;;
+comment)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+alter session set cursor_sharing=force;
+col TABLE_NAME format a32
+col OWNER format a10
+col COLUMN_NAME format a32
+col COMMENTS format a64
+set linesize 200
+set pagesize 100
+SELECT *
+FROM DBA_COL_COMMENTS
+WHERE TABLE_NAME = upper('$2')
+AND OWNER = upper('$3');
+exit
+EOF
+;;
+archive)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+alter session set cursor_sharing=force;
+set pagesize 30
+alter session set nls_date_format='yyyy-mm-dd hh24:mi:ss';
+set linesize 128;
+select thread#,first_time,z.completion_time,blocks*block_size/1024/1024 arhsize from v\$archived_log z  where thread#=$2;
+exit
+EOF
+;;
+session)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set linesize 256
+col machine for a28
+col max_machine for a20
+col min_machine for a20
+col MACHINE_NUM for 999
+col MIN_SESS for 9999
+col MAX_SESS for 9999
+col TOTAL_SESS for 9999
+select instance_name from v\$instance;
+SELECT inst_id,MACHINE,
+COUNT(DISTINCT REAL_MACHINE) MACHINE_NUMS,
+SUM(CNT) TOTAL_SESS,
+MAX(REAL_MACHINE)  KEEP (DENSE_RANK FIRST ORDER BY CNT DESC NULLS LAST) MAX_MACHINE,
+MAX(CNT) MAX_SESS,
+MIN(REAL_MACHINE)  KEEP (DENSE_RANK FIRST ORDER BY CNT ASC  NULLS LAST) MIN_MACHINE,
+MIN(CNT) MIN_SESS
+FROM (SELECT inst_id,REPLACE(REPLACE(MACHINE,'ZJHZ-PS-CMREAD-SV-',''),'-SD','')  REAL_MACHINE,
+REGEXP_REPLACE(REGEXP_REPLACE(REPLACE(REPLACE(MACHINE,'ZJHZ-PS-CMREAD-SV-',''),'-SD',''), '[0-9]', '#'),'#+','#') MACHINE,
+COUNT(*) CNT
+FROM GV\$SESSION
+GROUP BY REPLACE(REPLACE(MACHINE,'ZJHZ-PS-CMREAD-SV-',''),'-SD','')  ,REGEXP_REPLACE(REGEXP_REPLACE(REPLACE(REPLACE(MACHINE,'ZJHZ-PS-CMREAD-SV-',''),'-SD',''), '[0-9]', '#'),'#+','#') ,INST_ID)
+GROUP BY MACHINE,inst_id
+order by inst_id;
+Exit;
+EOF
+;;
+omon)
+tail -22f /home/oracle/admin/ALIPAY_OMON.log
+;;
+omem)
+tail -22f /home/oracle/admin/ALIPAY_OMON_MEM.log
+;;
+owait)
+tail -22f /home/oracle/admin/ALIPAY_OMON_WAIT.log
+;;
+osql)
+tail -22f /home/oracle/admin/ALIPAY_OMON_SQL.log
+;;
+vmstat)
+currentday="`date +%Y%m%d`"
+export LANG=en_us
+bashpath=/home/mon/loadcollect
+currentday="`date +%Y%m%d`"
+tail -21f ${bashpath}/log/${HOSTNAME}.${currentday}.vmstat
+;;
+tbs)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+set lines 300 pages 50000;
+set underline =;
+set colsep |;
+
+Column Type Format A10;
+Column C_Date Format A15;
+Column Tablespace Format A40;
+Column Files Format 99999999;
+Column Used_Pct Heading Used_Pct% Format 999;
+Column Force_Logging Heading Force_Log Format A10;
+Column Extent_Management Heading Ext_Mgt Format A15;
+Column Segment_Space_Management Heading Seg_Mgt Format A15;
+
+Column Retention Format A15;
+Break On Type Skip 2;
+Compute Count Of Tablespace On Type;
+Compute Sum Label "Sum_Size" Of Files "Total/G" "Used/G" "Free/G" "Total/M" "Used/M" "Free/M" On Type;
+
+Select dt.CONTENTS As Type,To_Char(Sysdate,'YY-MM-DD') As C_Date,T2.Tname As Tablespace,--Files,
+Round((1-(Nvl(T1.Free,0)/T2.Total))*100,0) As Used_Pct,
+--Round(T2.Total,2) "Total/G",Round(T2.Total-Nvl(T1.Free,0),2) "Used/G",Round(Nvl(T1.Free,0),2) "Free/G",
+Round(T2.Total*1024,2) "Total/M",Round(T2.Total*1024-Nvl(T1.Free*1024,0),2) "Used/M",Round(Nvl(T1.Free*1024,0),2) "Free/M",
+Dt.Bigfile,Dt.Status--,Dt.Force_Logging,Dt.Retention,Dt.Extent_Management,Dt.Segment_Space_Management
+From
+  ( Select A.Tablespace_Name As Tname,Sum(Nvl(A.Bytes,0))/1024/1024/1024 Free
+    From Dba_Free_Space A Group By A.Tablespace_Name ) T1,
+  ( Select B.Tablespace_Name Tname,Sum(B.Bytes)/1024/1024/1024 Total,Count(File_Id) As Files
+    From Dba_Data_Files B Group By B.Tablespace_Name ) T2,
+  Dba_Tablespaces Dt
+  Where T2.Tname=Dt.Tablespace_Name And T2.Tname=T1.Tname(+)
+Union All
+Select dt.CONTENTS As Type,To_Char(Sysdate,'YY-MM-DD') As C_Date,T4.Tablespace_Name As Tablespace,--Files,
+Nvl(Used_Size,0)/Total_Size As Used_Pct,
+--Round(Total_Size/1024,2) "Total/G",Round(Nvl(Used_Size/1024,0),2) "Used/G", Round( (Total_Size/1024-Nvl(Used_Size/1024,0)),2) "Free/G",
+Round(Total_Size,2) "Total/M",Round(Nvl(Used_Size,0),2) "Used/M", Round( (Total_Size-Nvl(Used_Size,0)),2) "Free/M",
+Dt.Bigfile,Dt.Status--,Dt.Force_Logging,Dt.Retention,Dt.Extent_Management,Dt.Segment_Space_Management
+From
+  ( --You cannot specify nonstandard block sizes for a temporary tablespace or if you intend to assign this tablespace as the temporary tablespace for any users.
+    Select Tablespace,Sum(Blocks)*(Select Value/1024 From V\$Parameter Where Name='db_block_size')/1024 As Used_Size
+    From V\$Tempseg_Usage Group By Tablespace ) T3,
+  ( Select Tablespace_Name,Sum(Bytes)/1024/1024 As Total_Size,Count(File_Id) As Files
+    From Dba_Temp_Files Group By Tablespace_Name ) T4,
+  Dba_Tablespaces Dt
+  Where T4.Tablespace_Name=Dt.Tablespace_Name And T4.Tablespace_Name=T3.Tablespace(+)
+Order By Type,4 Desc;
+exit;
+EOF
+;;
+tbs_single_sum)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+col PCT_USED for a10
+col PCT_FREE for a10
+col TABLESPACE_NAME for a20
+set linesize 200
+select /*+ rule */ tablespace_name,
+       count(file_name) datafile_count,
+       sum(size_mb) teotal_mb,
+       sum(USE_MB) USED_MB,
+       sum(free_mb) free_mb,
+       concat(avg (trunc(pct_used, 2)),'%' ) pct_used,  
+       concat(avg (trunc(pct_free, 2)),'%' ) pct_free
+  from ( SELECT 1 seq,
+               b.tablespace_name,
+               nvl(x.fs, 0 ) / y.ap * 100 pf,
+               b.file_name file_name,
+               b.bytes / 1024 / 1024 SIZE_MB,
+               NVL((b.bytes - SUM (f.bytes)) / 1024 / 1024,
+                   b.bytes / 1024 / 1024 ) USE_MB,
+               NVL(SUM (f.bytes) / 1024 / 1024, 0 ) FREE_MB,
+               ( 100-nvl (x.fs, 0) / y.ap * 100) pct_used,
+               nvl(x.fs, 0 ) / y.ap * 100  pct_free
+          FROM dba_free_space f,
+               dba_data_files b,
+               ( SELECT y.tablespace_name, SUM (y.bytes) fs
+                  FROM dba_free_space y
+                 GROUP BY y.tablespace_name) x,
+               ( SELECT x.tablespace_name, SUM (x.bytes) ap
+                  FROM dba_data_files x
+                 GROUP BY x.tablespace_name) y
+         WHERE f.file_id(+) = b.file_id
+           AND x.tablespace_name(+) = y.tablespace_name
+           and y.tablespace_name = b.tablespace_name
+           AND f.tablespace_name(+) = b.tablespace_name
+           and b.tablespace_name = upper ('$2')
+         GROUP BY B.tablespace_name,
+                  nvl(x.fs, 0 ) / y.ap * 100,
+                  b.file_name,
+                  b.bytes)
+ GROUP BY tablespace_name;
+exit;
+EOF
+;;
+tbs_single_dtl)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+SET PAGESIZE 1000 LINES 200 ECHO OFF VERIFY OFF FEEDB OFF SPACE 1 TRIMSP ON
+col AUTOEXTENSIBLE for a15
+COMPUTE SUM OF a_byt t_byt f_byt  ON REPORT
+compute avg of pct_free on report
+BREAK ON REPORT ON tablespace_name 
+COL tablespace_name FOR A10   TRU HEAD 'Tablespace|Name'
+COL file_name  FOR A50   TRU HEAD 'Filename'
+COL a_byt      FOR 9,990.999 HEAD 'Allocated|GB'
+COL t_byt      FOR 9,990.999 HEAD 'Current|Used GB'
+COL f_byt      FOR 9,990.999 HEAD 'Current|Free GB'
+COL pct_free   FOR 990.0     HEAD 'File %|Free'
+COL pf         FOR 990.0     HEAD 'Tbsp %|Free'
+COL MAX_EXT_GB_SIZE         FOR 999.0     HEAD 'Max|Size GB'
+COL AUTOEXTENSIBLE       HEAD 'Auto|Extensiable'
+COL seq NOPRINT
+DEFINE b_div=1073741824
+--
+SELECT 1 seq, b.tablespace_name,b.file_id, 
+--nvl(x.fs,0)/y.ap*100 pf, 
+b.file_name file_name,
+  b.bytes/&&b_div a_byt, NVL((b.bytes-SUM(f.bytes))/&&b_div,b.bytes/&&b_div) t_byt,
+  NVL(SUM(f.bytes)/&&b_div,0) f_byt, NVL(SUM(f.bytes)/b.bytes*100,0) pct_free, b.AUTOEXTENSIBLE, round(b.maxbytes/&&b_div) MAX_EXT_GB_SIZE
+FROM dba_free_space f, dba_data_files b
+ ,(SELECT y.tablespace_name, SUM(y.bytes) fs
+   FROM dba_free_space y GROUP BY y.tablespace_name) x
+ ,(SELECT x.tablespace_name, SUM(x.bytes) ap
+   FROM dba_data_files x GROUP BY x.tablespace_name) y
+WHERE f.file_id(+) = b.file_id
+AND   x.tablespace_name(+) = y.tablespace_name
+and   y.tablespace_name =  b.tablespace_name
+AND   f.tablespace_name(+) = b.tablespace_name
+and   b.tablespace_name = upper('$2')
+GROUP BY b.tablespace_name, nvl(x.fs,0)/y.ap*100,b.file_id, b.file_name, b.bytes, b.AUTOEXTENSIBLE, b.maxbytes/&&b_div;
+exit;
+EOF
+;;
+generic_id_password_status)
+sqlplus -s "$SQLPLUS_CMD" << EOF
+SET PAGESIZE 1000 LINES 200 ECHO OFF VERIFY OFF FEEDB OFF SPACE 1 TRIMSP ON
+COL seq NOPRINT
+select username,account_status,to_char(expiry_date,'yyyy/mm/dd hh24:mi:ss') expiry_date,password from
+dba_users a where username in ('CAS','CASBAK','GLH','GP','EBUSINESS',
+'CICS','MIS','AMS','AMS_BAK','AMS_WRK','FAS','IASYS','IAOPER','BJIASYS',
+'SHIASYS','APS','APSCFG','EAPS','CCNT','DMS','DMSUSER','ELUTONG','GFS_RPT',
+'GFS_V3','YBT_BOC','YBT_CCB_SH','YBT_MSL','YBT_SINO','EBGLH','PAD_ADMIN',
+'ACS','TM','MSL_DIL','SINO_MSP','KD_BANK','KD_COM','KD_HIS','KD_SALE',
+'KFCS','MF_MSL','JYDB','DMS','CSMIG','SUNSYSTEMSSECURITY','SUN','SSA',
+'OPS$SUNSERVICE','MYCREDIT_HIST','MYCREDIT2','MYCREDIT','SUNCAS',
+'SUNCX','AUDIT_READER','SIT_EAPPROVAL_MAIN','SIT_EAPPROVAL_RPT',
+'SIT_DCI_MAIN','SIT_EAPPROVAL_RECEIPT','MSLSAT','ADMIN','ATO_ADMIN',
+'YBT_DBS','DAP','PPAS','CIRCSYS') order by expiry_date;
+exit;
+EOF
+;;
+*)
+echo
+echo "Usage:";
+echo "  ora keyword [value1 [value2]] ";
+echo "  -----------------------------------------------------------------";
+echo "  si                          -- Login as OS User";
+echo "  active                      -- Get Active Session";
+echo "  active_withspid             -- Get Active Session with spid info";
+echo "  tbs_single_sum tabspacename -- Get Sumppary size of single tablespace";
+echo "  tbs_single_dtl tabspacename -- Get Detail info of single tablespace";
+echo "  generic_id_password_status  -- Get current generic id passowrd expiry info";
+echo "  size       tabname [owner]  -- Get Size of tables/indexes";
+echo "  spid_db_status  spid        -- OS PID status in database";
+echo "  tab_stats  tabname          -- table and index stats info";
+echo "  lock_check                  -- Check lock session";
+echo "  lock_bpo                    -- Check lock session for BPO user";
+echo "  kgllock                     -- Check library cache lock/pin session";
+echo "  sql_check  sql_id           -- Check SQL text, SQL plan, SQL stats";
+echo "  idxdesc    tabname owner    -- Display index structure";
+echo "  tsfree     [tsname]         -- Get Tablespace Usage";
+echo "  tablespace tsname           -- Tablespace Information";
+echo "  datafile   tsname           -- List data files by tablespace";
+echo "  sqltext    hash_value       -- Get SQL Text by hash value";
+echo "  plan       hash_value       -- Get Execute Plan by hash value";
+echo "  lock       [sid]            -- Get lock information by sid";
+echo "  lockwait                    -- Get lock requestor/blocker";
+echo "  objlike    pattern [owner]  -- Get object by name pattern";
+echo "  tablike    pattern [owner]  -- Get table by name pattern";
+echo "  tstat      tabname owner    -- Get table statistics";
+echo "  istat      tabname owner    -- Get index statistics";
+echo "  ipstat     indname owner    -- Get index partition statistics";
+echo "  objsql     objname owner    -- Get SQLs by object name";
+echo "  longops                     -- Get long run query";
+echo "  tran                        -- Get all the transactions";
+echo "  depend     objname [owner]  -- Get dependency information";
+echo "  event      event#           -- Get event name by event id";
+echo "  latch      latch#           -- Get latch name by latch id";
+echo "  hold       objectid         -- Who have lock on given object?";
+echo "  sort                        -- Who is running sort operation?";
+echo "  desc       tabname [owner]  -- Describe Table Structure";
+echo "  segment    [size]           -- Segment large than given size";
+echo "  seqlike    pattern [owner]  -- Get sequence by name pattern";
+echo "  tabpart    tabname [owner]  -- List table partitions";
+echo "  view       pattern [owner]  -- List view by name pattern";
+echo "  param      pattern          -- List Oracle parameters";
+echo "  _param     pattern          -- List Oracle hidden parameters";
+echo "  grant      objname [owner]  -- Get grant information";
+echo "  unusable   [owner]          -- List unusable indexes";
+echo "  invalid    [owner]          -- List invalid objects";
+echo "  spsql      hash days h1 h2  -- Get execution informations by hash";
+echo "  username       [owner]      -- get create user sql statment"
+echo "  plan       sql_id           -- get sql plan by sql_id";   
+echo "  spid       spid             -- get infomation spid";
+echo "  sid        sid              -- get infomation sid";
+echo "  ddl        objtype obj owner              -- get infomation sid";
+echo "  comment    tablename   owner              -- get  column describe";
+echo "  ----------------------------------------------------------------";
+echo
+;;
+esac
+

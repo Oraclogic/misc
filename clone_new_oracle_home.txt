@@ -1,0 +1,110 @@
+oslevel -s
+
+lslpp -l bos.adt.base bos.adt.lib bos.adt.libm bos.perf.perfstat \
+bos.perf.libperfstat bos.perf.proctools \
+xlC.rte gpfs.base
+
+getconf KERNEL_BITMODE
+
+September 2010 Runtime for XL C/C++ for AIX, V11.1
+
+
+/usr/sbin/instfix -i -k "IZ87216 IZ87564 IZ89165 IZ97035"
+
+/usr/sbin/no -a | fgrep ephemeral
+     tcp_ephemeral_low = 32768
+     tcp_ephemeral_high = 65535
+     udp_ephemeral_low = 32768
+     udp_ephemeral_high = 65535
+
+smit securiy --create group oinstall dba
+useradd -u 1000 -g oinstall -G dba oracle
+smit chuser
+smit chgsys
+
+ioo -o aio_maxreqs
+aio_maxreqs = 65536
+
+ps -ek|grep -v grep|grep -v posix_aioserver|grep -c aioserver
+
+mkdir -p /tech/oracle/product/11.2.0/11204
+vi /etc/oraInst.loc
+inventory_loc=/tech/oracle/oraInventory
+inst_group=oinstall
+#chown oracle:install /etc/oraInst.loc
+
+export TARGET_HOME=$ORACLE_HOME
+export OSDBA_privileged_group=dba
+export OSOPER_privileged_group=dba
+export UNIQUE_HOME_NAME=Ora11204_home1
+cd $ORACLE_HOME/clone/bin
+perl clone.pl ORACLE_HOME="$TARGET_HOME" ORACLE_HOME_NAME="$UNIQUE_HOME_NAME" ORACLE_BASE="$ORACLE_BASE" OSDBA_GROUP=$OSDBA_privileged_group OSOPER_GROUP=$OSOPER_privileged_group
+
+
+
+$ORACLE_HOME/bin/diagsetup basedir=$ORACLE_BASE oraclehome=$ORACLE_HOME
+
+./runInstaller -clone -silent -ignorePreReq ORACLE_HOME="$TARGET_HOME" ORACLE_HOME_NAME="$UNIQUE_HOME_NAME" ORACLE_BASE="$ORACLE_BASE" oracle_install_OSDBA=$OSDBA_privileged_group oracle_install_OSOPER=$OSOPER_privileged_group
+
+
+export DBNAME=ZVCP01RD
+dbca -silent -createDatabase -templateName General_Purpose.dbc \
+-gdbName $DBNAME -sid $DBNAME \
+-sysPassword ford1612 -systemPassword ford1612 -characterset ZHS16GBK \
+-redoLogFileSize 500 \
+-emConfiguration NONE \
+
+
+alter system set audit_trail=db scope=spfile;
+alter system set audit_sys_operations=true scope=spfile;
+alter system set processes=2000 scope=spfile;
+alter system set open_cursors=1000 scope=spfile;
+alter system set session_cached_cursors=500 scope=spfile;
+audit alter system;
+audit create public database link;
+audit create public  synonym;
+audit create role;
+audit create user;
+audit create session;
+begin
+  for i in (select * from dba_role_privs where granted_role='DBA' and grantee not in ('SYS')) loop
+    execute immediate 'audit all by '||i.grantee;
+    execute immediate 'audit all privileges by '||i.grantee;
+end loop;
+end;
+/
+
+alter profile default limit PASSWORD_REUSE_MAX unlimited;
+alter profile default limit PASSWORD_REUSE_TIME 360;
+alter profile default limit PASSWORD_LIFE_TIME 60;
+alter profile default limit PASSWORD_GRACE_TIME 15;
+alter profile default limit PASSWORD_LOCK_TIME unlimited;
+alter profile default limit FAILED_LOGIN_ATTEMPTS 5;
+alter profile default limit PASSWORD_VERIFY_FUNCTION SF_PWD_VER;
+
+alter profile MONITORING_PROFILE limit PASSWORD_REUSE_MAX unlimited;
+alter profile MONITORING_PROFILE limit PASSWORD_REUSE_TIME 360;
+alter profile MONITORING_PROFILE limit PASSWORD_LIFE_TIME 60;
+alter profile MONITORING_PROFILE limit PASSWORD_GRACE_TIME 15;
+alter profile MONITORING_PROFILE limit PASSWORD_LOCK_TIME unlimited;
+alter profile MONITORING_PROFILE limit FAILED_LOGIN_ATTEMPTS 5;
+alter profile MONITORING_PROFILE limit PASSWORD_VERIFY_FUNCTION SF_PWD_VER;
+
+   CREATE PROFILE "GENERAL_PROFILE_SP"
+    LIMIT 
+         COMPOSITE_LIMIT DEFAULT 
+         SESSIONS_PER_USER DEFAULT 
+         CPU_PER_SESSION DEFAULT 
+         CPU_PER_CALL DEFAULT 
+         LOGICAL_READS_PER_SESSION DEFAULT 
+         LOGICAL_READS_PER_CALL DEFAULT 
+         IDLE_TIME DEFAULT 
+         CONNECT_TIME DEFAULT 
+         PRIVATE_SGA DEFAULT 
+         FAILED_LOGIN_ATTEMPTS 5 
+         PASSWORD_LIFE_TIME 31104000/86400 
+         PASSWORD_REUSE_TIME 31104000/86400 
+         PASSWORD_REUSE_MAX UNLIMITED 
+         PASSWORD_VERIFY_FUNCTION "SF_PWD_VER" 
+         PASSWORD_LOCK_TIME UNLIMITED 
+         PASSWORD_GRACE_TIME 1296000/86400 ;
